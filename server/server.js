@@ -34,17 +34,7 @@ app.use((req, res, next) => {
 // GET all data related to books
 app.get("/api/books", (req, res) => {
     connection.query(`
-        SELECT 
-    b.title, 
-    b.pubDate, 
-    b.genre, 
-    b.price,
-    b.isbn,
-    a.author
-FROM 
-    books b
-JOIN 
-    author a ON b.author_id = a.author_id;
+        select * from Author as a, Category as c, Book as b where  a.author_id = b.author_id and c.category_id = b.category_id;
     `, (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         console.log('get request result',results);
@@ -59,31 +49,72 @@ app.post("/api/books", (req, res) => {
     const newData = req.body;
     const { author, title, isbn, price, pubDate, genre } = newData;
 
-    // Insert author into author table
-    connection.query(`INSERT INTO author (author, isbn) VALUES (?, ?)`, [author, isbn], (err, authorResults) => {
+    // Check if the author already exists; if not, insert it
+    connection.query(`SELECT author_id FROM Author WHERE author = ?`, [author], (err, authorResults) => {
         if (err) return res.status(500).json({ error: err.message });
 
-        const author_id = authorResults.insertId;
-
-        // Insert book into books table
-        connection.query(`INSERT INTO books (title, isbn, price, pubDate, genre, author_id) VALUES (?, ?, ?, ?, ?, ?)`, 
-        [title, isbn, price, pubDate, genre, author_id], (err, bookResults) => {
-            if (err) return res.status(500).json({ error: err.message });
-            res.status(201).json({ id: bookResults.insertId, ...newData });
-        });
+        if (authorResults.length > 0) {
+            // Author exists, use the existing ID
+            insertCategoryAndBook(authorResults[0].author_id);
+        } else {
+            // Insert new author
+            connection.query(`INSERT INTO Author (author) VALUES (?)`, [author], (err, authorInsertResults) => {
+                if (err) return res.status(500).json({ error: err.message });
+                insertCategoryAndBook(authorInsertResults.insertId);
+            });
+        }
     });
+
+    function insertCategoryAndBook(author_id) {
+        // Check if the category (genre) exists; if not, insert it
+        connection.query(`SELECT category_id FROM Category WHERE genre = ?`, [genre], (err, categoryResults) => {
+            if (err) return res.status(500).json({ error: err.message });
+
+            if (categoryResults.length > 0) {
+                // Genre exists, use the existing category_id
+                insertBook(author_id, categoryResults[0].category_id);
+            } else {
+                // Insert new genre
+                connection.query(`INSERT INTO Category (genre) VALUES (?)`, [genre], (err, categoryInsertResults) => {
+                    if (err) return res.status(500).json({ error: err.message });
+                    insertBook(author_id, categoryInsertResults.insertId);
+                });
+            }
+        });
+    }
+
+    function insertBook(author_id, category_id) {
+        // Insert book with foreign keys
+        connection.query(
+            `INSERT INTO Book (title, isbn, price, pubDate, author_id, category_id) VALUES (?, ?, ?, ?, ?, ?)`, 
+            [title, isbn, price, pubDate, author_id, category_id], 
+            (err, bookResults) => {
+                if (err) return res.status(500).json({ error: err.message });
+                res.status(201).json({ id: bookResults.insertId, ...newData });
+            }
+        );
+    }
 });
+
 
 // DELETE: Remove a record by ID
 app.delete("/api/books/:isbn", (req, res) => {
     const isbn = req.params.isbn;
-    connection.query(`DELETE FROM books WHERE isbn = ?`, [isbn], (err, results) => {
+
+    // Check if the book exists before deletion
+    connection.query(`SELECT * FROM Book WHERE isbn = ?`, [isbn], (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
-        if (results.affectedRows === 0) return res.status(404).json({ error: "Record not found" });
-        res.json({ message: "Deleted successfully" });
+        if (results.length === 0) return res.status(404).json({ error: "Book not found" });
+
+        // Delete the book
+        connection.query(`DELETE FROM Book WHERE isbn = ?`, [isbn], (err, deleteResults) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ message: "Deleted successfully", deletedBook: results[0] });
+        });
     });
 });
-   
+
+
 
 // Start Server
 app.listen(PORT, () => {
